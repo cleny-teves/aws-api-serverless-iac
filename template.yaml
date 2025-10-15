@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Proyecto de IaC con CloudFormation puro. Despliega una API CRUD serverless con API Gateway, Lambda y DynamoDB.
+
+Resources:
+  # 1. La Tabla de DynamoDB
+  CrudItemsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: crud-items-cfn
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # 2. El Rol de IAM para la Función Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaDynamoDBRole-cfn
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaDynamoDBPolicy-cfn
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt CrudItemsTable.Arn
+
+  # 3. La Función Lambda
+  CrudLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: crud-lambda-cfn
+      Code: src/
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  # 4. El API Gateway (de tipo HTTP)
+  CrudApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: crud-api-cfn
+      ProtocolType: HTTP
+
+  # 5. La Integración entre API Gateway y Lambda
+  LambdaApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CrudApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CrudLambdaFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # 6. Las Rutas del API (Parte del "Trigger")
+  GetAllItemsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CrudApi
+      RouteKey: GET /items
+      Target: !Sub integrations/${LambdaApiIntegration}
+  GetItemByIdRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CrudApi
+      RouteKey: GET /items/{id}
+      Target: !Sub integrations/${LambdaApiIntegration}
+  PutItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CrudApi
+      RouteKey: PUT /items
+      Target: !Sub integrations/${LambdaApiIntegration}
+  DeleteItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CrudApi
+      RouteKey: DELETE /items/{id}
+      Target: !Sub integrations/${LambdaApiIntegration}
+
+  # 7. El Despliegue (Stage) del API (LA SECCIÓN QUE FALTABA)
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref CrudApi
+      StageName: v1 # Usamos un nombre de stage personalizado
+      AutoDeploy: true
+    DependsOn: # Nos aseguramos que las rutas se creen ANTES que el stage
+      - GetAllItemsRoute
+      - GetItemByIdRoute
+      - PutItemRoute
+      - DeleteItemRoute
+
+  # 8. Permiso para que el API Gateway invoque la Lambda (Parte del "Trigger")
+  ApiGatewayLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CrudLambdaFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CrudApi}/*/*"
+
+Outputs:
+  CrudApiEndpoint:
+    Description: "Endpoint URL for the CRUD API"
+    Value: !Sub "https://${CrudApi}.execute-api.${AWS::Region}.amazonaws.com/v1" # Actualizamos la URL para incluir el stage
